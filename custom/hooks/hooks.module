@@ -1,0 +1,93 @@
+<?php
+
+use Drupal\Core\Access\AccessResult;
+use Symfony\Component\HttpFoundation\RedirectResponse;
+
+function hooks_commerce_store_create_access(\Drupal\Core\Session\AccountInterface $account, array $context, $entity_bundle) {
+
+  $user_id = \Drupal::currentUser()->id();
+  $query = \Drupal::database()->select('commerce_store_field_data', 'csfd');
+  $query->condition('csfd.uid', $user_id);
+  $count = $query->countQuery()->execute()->fetchField();
+  if ($count != 0) {
+    //    \Drupal::messenger()->addMessage('Sorry, you can have only one store');
+    return AccessResult::forbidden('Sorry, you can have only one store');
+  }
+  // No opinion.
+  return AccessResult::neutral();
+}
+
+function hooks_user_login($account) {
+  $route = '/';
+  if ($account->hasRole('company_owner')) {
+    $route = "/user/{$account->id()}";
+  }
+
+  $res = new RedirectResponse($route);
+  $res->send();
+
+  \Drupal::messenger()->addMessage("Hello, {$account->getAccountName()}! We are pleased you.");
+}
+
+function hooks_node_presave(Drupal\Core\Entity\EntityInterface $entity) {
+  if ($entity->bundle() === "review") {
+    $message_show = TRUE;
+    $uid = $entity->get("uid")->target_id;
+    $is_owner = Drupal::currentUser()->id() === $uid;
+    $store_referenced_id = $entity->get('field_company')->target_id;
+    $mail_service = Drupal::service('plugin.manager.mail');
+
+    $query_get_id_store = Drupal::database()->select('commerce_store_field_data', 'csfd');
+    $query_get_id_store->condition('csfd.store_id', $store_referenced_id);
+    $query_get_id_store->addField('csfd', 'uid');
+    $owner_store_id = $query_get_id_store->execute()->fetchField();
+
+    if ($owner_store_id === $uid) {
+      $entity->status->setValue(0);
+      $message_show = FALSE;
+      Drupal::messenger()->addError("Sorry, but you can't add your company for review");
+    }
+
+    if ($message_show && $entity->isNew()) {
+      Drupal::messenger()->addMessage("Thank you for your feedback");
+      $mail_service->mail('mod', 'changes_review', "email@mail.ru", 'en', [], NULL, TRUE);
+      $res = new RedirectResponse("/store/{$store_referenced_id}");
+      $res->send();
+    }
+
+    if ($message_show && !$entity->isNew() && $is_owner) {
+      $user = \Drupal\user\Entity\User::load($uid);
+      $mail = $user->get('mail')->value;
+      $mail_service->mail('mod', 'changes_review', $mail, 'en', [], NULL, TRUE);
+    }
+  }
+}
+
+function hooks_node_delete(Drupal\Core\Entity\EntityInterface $entity) {
+
+  if ($entity->bundle() === "review") {
+    $uid = $entity->get('uid')->target_id;
+    $is_owner = Drupal::currentUser()->id() === $uid;
+
+    if (!$is_owner) {
+      $user = \Drupal\user\Entity\User::load((int) $uid);
+      $mail = $user->get('mail')->value;
+      $mail_service = Drupal::service('plugin.manager.mail');
+      $mail_service->mail('mod', 'delete_review', $mail, 'en', [], NULL, TRUE);
+    }
+  }
+}
+
+function hooks_form_node_review_form_alter(&$form, \Drupal\Core\Form\FormStateInterface $form_state, $form_id) {
+  $form['actions']['submit']['#submit'][] = 'hooks_form_review_form_submit';
+}
+
+function hooks_form_review_form_submit($form, &$form_state) {
+  if (count($_SESSION['_symfony_flashes']['status']) > 1) {
+    array_pop($_SESSION['_symfony_flashes']['status']);
+  }
+  else {
+    unset($_SESSION['_symfony_flashes']['status']);
+  }
+}
+
